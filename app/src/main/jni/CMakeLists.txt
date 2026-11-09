@@ -17,7 +17,10 @@ list(APPEND CMAKE_MODULE_PATH "${GSTREAMER_ROOT}/share/cmake")
 set(GSTREAMER_NDK_BUILD_PATH "${GSTREAMER_ROOT}/share/gst-android/ndk-build/")
 include("${GSTREAMER_NDK_BUILD_PATH}/plugins.cmake")
 
-set(GSTREAMER_PLUGINS coreelements videotestsrc videoconvertscale autodetect opengl)
+set(GSTREAMER_PLUGINS
+    coreelements typefindfunctions playback videotestsrc videoconvertscale opengl
+    rtsp rtp rtpmanager udp
+    videoparsersbad androidmedia libav isomp4)
 set(GStreamer_EXTRA_DEPS gstreamer-video-1.0 gobject-2.0 glib-2.0)
 
 find_library(ANDROID_LIB android REQUIRED)

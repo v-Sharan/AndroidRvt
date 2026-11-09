@@ -1,71 +1,102 @@
 package com.androidrvt.viewer
 
 import android.os.Bundle
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.view.InputDevice
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
+import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.ui.Alignment
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.androidrvt.viewer.video.GstRuntime
-import com.androidrvt.viewer.video.VideoEngine
+import com.androidrvt.viewer.ui.LiveScreen
+import com.androidrvt.viewer.ui.LogScreen
+import com.androidrvt.viewer.ui.SettingsScreen
+import kotlin.math.abs
 
-private const val TEST_PATTERN =
-    "videotestsrc is-live=true pattern=smpte horizontal-speed=4 " +
-        "! video/x-raw,width=1280,height=720,framerate=30/1 " +
-        "! glimagesink name=sink"
+private enum class Overlay { NONE, SETTINGS, LOG }
 
 class MainActivity : ComponentActivity() {
-    private var engine: VideoEngine? = null
+    private val viewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppLog.installCrashHandler(this)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemBars()
 
-        // Shown on screen because cloud-built APKs are tested without a debugger attached.
-        val startupError = try {
-            GstRuntime.init(this)
-            engine = VideoEngine(TEST_PATTERN)
-            null
-        } catch (t: Throwable) {
-            "${t.javaClass.simpleName}: ${t.message}"
-        }
-
         setContent {
-            VideoScreen(engine, startupError)
+            MaterialTheme(colorScheme = darkColorScheme()) {
+                var overlay by remember { mutableStateOf(Overlay.NONE) }
+
+                // The live view stays underneath so opening settings doesn't interrupt the video.
+                Box(Modifier.fillMaxSize()) {
+                    LiveScreen(
+                        viewModel = viewModel,
+                        onOpenSettings = { overlay = Overlay.SETTINGS },
+                        onOpenLog = { overlay = Overlay.LOG },
+                    )
+                    when (overlay) {
+                        Overlay.SETTINGS -> SettingsScreen(viewModel, onClose = { overlay = Overlay.NONE })
+                        Overlay.LOG -> LogScreen(onClose = { overlay = Overlay.NONE })
+                        Overlay.NONE -> Unit
+                    }
+                }
+                BackHandler(enabled = overlay != Overlay.NONE) { overlay = Overlay.NONE }
+            }
         }
     }
 
     override fun onStart() {
         super.onStart()
-        engine?.play()
+        viewModel.onForeground()
     }
 
     override fun onStop() {
-        engine?.stop()
+        viewModel.onBackground()
         super.onStop()
     }
 
-    override fun onDestroy() {
-        engine?.close()
-        engine = null
-        super.onDestroy()
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        val isStick = event.isFromSource(InputDevice.SOURCE_JOYSTICK) && event.action == MotionEvent.ACTION_MOVE
+        if (!isStick) return super.dispatchGenericMotionEvent(event)
+        viewModel.setGamepadAxes(
+            pan = applyDeadzone(event.getAxisValue(MotionEvent.AXIS_X)),
+            tilt = -applyDeadzone(event.getAxisValue(MotionEvent.AXIS_Y)),
+            zoom = -applyDeadzone(event.getAxisValue(MotionEvent.AXIS_RZ)),
+        )
+        return true
     }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (!event.isFromSource(InputDevice.SOURCE_GAMEPAD)) return super.dispatchKeyEvent(event)
+        val pressed = event.action == KeyEvent.ACTION_DOWN
+        val firstPress = pressed && event.repeatCount == 0
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_BUTTON_A -> if (firstPress) viewModel.trackPoint(0.5f, 0.5f)
+            KeyEvent.KEYCODE_BUTTON_B -> if (firstPress) viewModel.trackStop()
+            KeyEvent.KEYCODE_BUTTON_X -> if (firstPress) viewModel.requestSnapshot()
+            KeyEvent.KEYCODE_BUTTON_Y -> if (firstPress) viewModel.toggleRecording()
+            KeyEvent.KEYCODE_BUTTON_R1 -> viewModel.setZoomRate(if (pressed) 1f else 0f)
+            KeyEvent.KEYCODE_BUTTON_L1 -> viewModel.setZoomRate(if (pressed) -1f else 0f)
+            else -> return super.dispatchKeyEvent(event)
+        }
+        return true
+    }
+
+    private fun applyDeadzone(value: Float): Float = if (abs(value) < GAMEPAD_DEADZONE) 0f else value
 
     private fun hideSystemBars() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -74,47 +105,8 @@ class MainActivity : ComponentActivity() {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
     }
-}
 
-@Composable
-private fun VideoScreen(engine: VideoEngine?, startupError: String?) {
-    val status = engine?.status?.collectAsState()?.value ?: startupError ?: "Not started"
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black),
-    ) {
-        if (engine != null) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { context ->
-                    SurfaceView(context).apply {
-                        holder.addCallback(EngineSurfaceCallback(engine))
-                    }
-                },
-            )
-        }
-        Text(
-            text = status,
-            color = Color.White,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(12.dp)
-                .background(Color(0x99000000))
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-        )
-    }
-}
-
-private class EngineSurfaceCallback(private val engine: VideoEngine) : SurfaceHolder.Callback {
-    override fun surfaceCreated(holder: SurfaceHolder) = Unit
-
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        engine.setSurface(holder.surface)
-    }
-
-    override fun surfaceDestroyed(holder: SurfaceHolder) {
-        engine.setSurface(null)
+    private companion object {
+        const val GAMEPAD_DEADZONE = 0.12f
     }
 }

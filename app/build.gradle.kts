@@ -20,8 +20,8 @@ android {
         applicationId = "com.androidrvt.viewer"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "1.0.0"
 
         ndk {
             abiFilters += "arm64-v8a"
@@ -93,4 +93,6 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 }
