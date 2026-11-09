@@ -14,7 +14,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -36,7 +36,7 @@ jobs:
 
       - name: Restore GStreamer
         id: gst-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/gst-android
           key: gst-android-arm64-${{ env.GST_VERSION }}
@@ -48,11 +48,29 @@ jobs:
           FILE="gstreamer-1.0-android-universal-$GST_VERSION.tar.xz"
           mkdir -p ~/gst-android "$RUNNER_TEMP/gst"
           cd "$RUNNER_TEMP/gst"
-          curl -fsSL --retry 5 -O "$BASE/$FILE"
+          # The server drops long transfers, so keep resuming until the file is complete.
+          TOTAL=$(curl -fsSIL "$BASE/$FILE" | tr -d '\r' | awk 'tolower($1)=="content-length:"{v=$2} END{print v}')
+          START=$SECONDS
+          for ATTEMPT in $(seq 1 3000); do
+            curl -fSL --no-progress-meter --connect-timeout 30 \
+              --speed-time 60 --speed-limit 20000 -C - -O "$BASE/$FILE" || true
+            SIZE=$(stat -c %s "$FILE" 2>/dev/null || echo 0)
+            [ "$SIZE" -ge "$TOTAL" ] && break
+            sleep 2
+          done
+          echo "downloaded $SIZE of $TOTAL bytes in $ATTEMPT attempts, $((SECONDS - START))s"
           curl -fsSL --retry 5 -O "$BASE/$FILE.sha256sum"
           sha256sum -c "$FILE.sha256sum"
-          tar -xJf "$FILE" -C ~/gst-android --wildcards '*arm64/*'
+          time tar -xJf "$FILE" -C ~/gst-android --wildcards '*arm64/*'
           rm -f "$FILE"
+
+      # Saved here rather than at job end so a compile error doesn't lose the download.
+      - name: Save GStreamer cache
+        if: steps.gst-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/gst-android
+          key: gst-android-arm64-${{ env.GST_VERSION }}
 
       - name: Show GStreamer contents
         run: |
