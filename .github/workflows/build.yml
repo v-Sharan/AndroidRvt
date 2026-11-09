@@ -1,0 +1,73 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  GST_VERSION: "1.28.9"
+  NDK_VERSION: "29.0.14206865"
+  CMAKE_VERSION: "3.22.1"
+  GRADLE_VERSION: "8.11.1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Install Android components
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          (yes || true) | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "ndk;$NDK_VERSION" "cmake;$CMAKE_VERSION" \
+            "platforms;android-35" "build-tools;35.0.0" > /dev/null
+
+      - name: Restore GStreamer
+        id: gst-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/gst-android
+          key: gst-android-arm64-${{ env.GST_VERSION }}
+
+      - name: Download GStreamer
+        if: steps.gst-cache.outputs.cache-hit != 'true'
+        run: |
+          BASE="https://gstreamer.freedesktop.org/data/pkg/android/$GST_VERSION"
+          FILE="gstreamer-1.0-android-universal-$GST_VERSION.tar.xz"
+          mkdir -p ~/gst-android "$RUNNER_TEMP/gst"
+          cd "$RUNNER_TEMP/gst"
+          curl -fsSL --retry 5 -O "$BASE/$FILE"
+          curl -fsSL --retry 5 -O "$BASE/$FILE.sha256sum"
+          sha256sum -c "$FILE.sha256sum"
+          tar -xJf "$FILE" -C ~/gst-android --wildcards '*arm64/*'
+          rm -f "$FILE"
+
+      - name: Show GStreamer contents
+        run: |
+          echo "GSTREAMER_ROOT_ANDROID=$HOME/gst-android" >> "$GITHUB_ENV"
+          du -sh ~/gst-android
+          ls ~/gst-android/arm64/lib/gstreamer-1.0 | grep -E '\.a$' | sed -E 's/^libgst//; s/\.a$//' | sort | tr '\n' ' '
+          echo
+          grep -nE 'JAVA_SRC_DIR|ASSETS_DIR' ~/gst-android/arm64/share/cmake/FindGStreamerMobile.cmake | head -20
+
+      - name: Build debug APK
+        run: gradle assembleDebug --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AndroidRvt-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
