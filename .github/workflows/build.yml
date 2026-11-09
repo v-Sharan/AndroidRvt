@@ -48,17 +48,13 @@ jobs:
           FILE="gstreamer-1.0-android-universal-$GST_VERSION.tar.xz"
           mkdir -p ~/gst-android "$RUNNER_TEMP/gst"
           cd "$RUNNER_TEMP/gst"
-          # The server drops long transfers, so keep resuming until the file is complete.
-          TOTAL=$(curl -fsSIL "$BASE/$FILE" | tr -d '\r' | awk 'tolower($1)=="content-length:"{v=$2} END{print v}')
-          START=$SECONDS
-          for ATTEMPT in $(seq 1 3000); do
-            curl -fSL --no-progress-meter --connect-timeout 30 \
-              --speed-time 60 --speed-limit 20000 -C - -O "$BASE/$FILE" || true
-            SIZE=$(stat -c %s "$FILE" 2>/dev/null || echo 0)
-            [ "$SIZE" -ge "$TOTAL" ] && break
-            sleep 2
-          done
-          echo "downloaded $SIZE of $TOTAL bytes in $ATTEMPT attempts, $((SECONDS - START))s"
+          # The server is slow per connection and drops long transfers, so split the
+          # file across many connections and retry each piece until it is complete.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq aria2
+          time aria2c -x16 -s16 -k5M --continue=true --max-tries=0 --retry-wait=2 \
+            --timeout=30 --file-allocation=none --summary-interval=30 \
+            --console-log-level=warn -o "$FILE" "$BASE/$FILE"
           curl -fsSL --retry 5 -O "$BASE/$FILE.sha256sum"
           sha256sum -c "$FILE.sha256sum"
           time tar -xJf "$FILE" -C ~/gst-android --wildcards '*arm64/*'
